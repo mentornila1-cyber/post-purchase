@@ -27,10 +27,8 @@ const DEFAULT_FORM = {
   description: "",
   shopify_product_id: "",
   shopify_variant_id: "",
-  shopify_variant_legacy_id: "",
   image_url: "",
   original_price: "",
-  discounted_price: "",
   currency: "USD",
   discount_type: "percentage",
   discount_value: "",
@@ -48,15 +46,53 @@ const splitCsv = (raw) =>
 
 const joinCsv = (arr) => (Array.isArray(arr) ? arr.join(", ") : "");
 
+const firstCsvValue = (raw) => splitCsv(raw)[0] || "";
+
+const findProduct = (products, productId) => products.find((product) => product.id === productId);
+
+const findVariant = (products, variantId) =>
+  products.flatMap((product) => product.variants || []).find((variant) => variant.id === variantId);
+
+const productOptions = (products, selectedProductId) => {
+  const options = [
+    { label: "Select product", value: "" },
+    ...products.map((product) => ({ label: product.title, value: product.id })),
+  ];
+
+  if (selectedProductId && !findProduct(products, selectedProductId)) {
+    options.push({ label: `Current product (${selectedProductId})`, value: selectedProductId });
+  }
+
+  return options;
+};
+
+const variantOptions = (products, productId, selectedVariantId) => {
+  const product = findProduct(products, productId);
+  const options = [{ label: "Select variant", value: "" }];
+
+  if (product) {
+    options.push(
+      ...product.variants.map((variant) => ({
+        label: variant.title === "Default Title" ? product.title : `${product.title} - ${variant.title}`,
+        value: variant.id,
+      })),
+    );
+  }
+
+  if (selectedVariantId && !findVariant(products, selectedVariantId)) {
+    options.push({ label: `Current variant (${selectedVariantId})`, value: selectedVariantId });
+  }
+
+  return options;
+};
+
 const offerToForm = (offer) => ({
   title: offer.title || "",
   description: offer.description || "",
   shopify_product_id: offer.shopify_product_id || "",
   shopify_variant_id: offer.shopify_variant_id || "",
-  shopify_variant_legacy_id: offer.shopify_variant_legacy_id || "",
   image_url: offer.image_url || "",
   original_price: offer.original_price ?? "",
-  discounted_price: offer.discounted_price ?? "",
   currency: offer.currency || "USD",
   discount_type: offer.discount_type || "percentage",
   discount_value: offer.discount_value ?? "",
@@ -66,13 +102,28 @@ const offerToForm = (offer) => ({
   active: !!offer.active,
 });
 
+const calculateDiscountedPrice = (form) => {
+  const originalPrice = Number(form.original_price);
+  const discountValue = Number(form.discount_value);
+
+  if (!Number.isFinite(originalPrice) || originalPrice <= 0) return null;
+  if (!Number.isFinite(discountValue) || discountValue <= 0) return originalPrice;
+
+  const discounted =
+    form.discount_type === "fixed_amount"
+      ? originalPrice - discountValue
+      : originalPrice * (1 - discountValue / 100);
+
+  return Number(Math.max(discounted, 0).toFixed(2));
+};
+
 const formToPayload = (form) => ({
   offer: {
     ...form,
     priority: Number(form.priority) || 0,
     discount_value: form.discount_value === "" ? null : Number(form.discount_value),
     original_price: form.original_price === "" ? null : Number(form.original_price),
-    discounted_price: form.discounted_price === "" ? null : Number(form.discounted_price),
+    discounted_price: calculateDiscountedPrice(form),
     trigger_product_ids: splitCsv(form.trigger_product_ids),
     trigger_variant_ids: splitCsv(form.trigger_variant_ids),
   },
@@ -92,6 +143,20 @@ export default function OffersPage() {
       const res = await fetch("/api/offers");
       if (!res.ok) throw new Error("Failed to load offers");
       return res.json();
+    },
+  });
+
+  const {
+    data: products = [],
+    isLoading: productsLoading,
+    isError: productsError,
+  } = useQuery({
+    queryKey: ["shopify-products"],
+    queryFn: async () => {
+      const res = await fetch("/api/shopify/products");
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || "Failed to load Shopify products");
+      return body;
     },
   });
 
@@ -164,6 +229,48 @@ export default function OffersPage() {
   };
 
   const updateField = (field) => (value) => setForm((f) => ({ ...f, [field]: value }));
+  const previewDiscountedPrice = calculateDiscountedPrice(form);
+  const triggerProductId = firstCsvValue(form.trigger_product_ids);
+  const triggerVariantId = firstCsvValue(form.trigger_variant_ids);
+
+  const selectOfferProduct = (productId) => {
+    const product = findProduct(products, productId);
+    const variant = product?.variants[0];
+
+    setForm((current) => ({
+      ...current,
+      title: current.title || product?.title || "",
+      shopify_product_id: productId,
+      shopify_variant_id: variant?.id || "",
+      image_url: current.image_url || product?.image_url || "",
+      original_price: variant ? String(variant.price) : "",
+    }));
+  };
+
+  const selectOfferVariant = (variantId) => {
+    const variant = findVariant(products, variantId);
+
+    setForm((current) => ({
+      ...current,
+      shopify_variant_id: variantId,
+      original_price: variant ? String(variant.price) : current.original_price,
+    }));
+  };
+
+  const selectTriggerProduct = (productId) => {
+    const product = findProduct(products, productId);
+    const variant = product?.variants[0];
+
+    setForm((current) => ({
+      ...current,
+      trigger_product_ids: productId,
+      trigger_variant_ids: variant?.id || "",
+    }));
+  };
+
+  const selectTriggerVariant = (variantId) => {
+    setForm((current) => ({ ...current, trigger_variant_ids: variantId }));
+  };
 
   if (isLoading) {
     return (
@@ -274,30 +381,29 @@ export default function OffersPage() {
               autoComplete="off"
             />
 
+            {productsError ? (
+              <Banner status="critical">
+                Could not load active Shopify products. Confirm the app has product access scopes
+                and reinstall if scopes changed.
+              </Banner>
+            ) : null}
+
             <FormLayout.Group>
-              <TextField
-                label="Shopify product ID (GID)"
+              <Select
+                label="Offer product"
+                options={productOptions(products, form.shopify_product_id)}
                 value={form.shopify_product_id}
-                onChange={updateField("shopify_product_id")}
-                helpText="e.g. gid://shopify/Product/123"
-                autoComplete="off"
+                onChange={selectOfferProduct}
+                disabled={productsLoading || productsError}
               />
-              <TextField
-                label="Shopify variant ID (GID)"
+              <Select
+                label="Offer variant"
+                options={variantOptions(products, form.shopify_product_id, form.shopify_variant_id)}
                 value={form.shopify_variant_id}
-                onChange={updateField("shopify_variant_id")}
-                helpText="e.g. gid://shopify/ProductVariant/456"
-                autoComplete="off"
+                onChange={selectOfferVariant}
+                disabled={productsLoading || productsError || !form.shopify_product_id}
               />
             </FormLayout.Group>
-
-            <TextField
-              label="Variant legacy ID (numeric)"
-              value={form.shopify_variant_legacy_id}
-              onChange={updateField("shopify_variant_legacy_id")}
-              helpText="Required for the post-purchase changeset (numeric variant ID)"
-              autoComplete="off"
-            />
 
             <TextField
               label="Image URL"
@@ -312,13 +418,7 @@ export default function OffersPage() {
                 type="number"
                 value={form.original_price}
                 onChange={updateField("original_price")}
-                autoComplete="off"
-              />
-              <TextField
-                label="Discounted price"
-                type="number"
-                value={form.discounted_price}
-                onChange={updateField("discounted_price")}
+                helpText="Filled from the selected Shopify variant. You can override for demo data."
                 autoComplete="off"
               />
               <TextField
@@ -355,20 +455,30 @@ export default function OffersPage() {
               />
             </FormLayout.Group>
 
-            <TextField
-              label="Trigger product IDs"
-              value={form.trigger_product_ids}
-              onChange={updateField("trigger_product_ids")}
-              helpText="Comma-separated product GIDs that should trigger this offer"
-              autoComplete="off"
-            />
-            <TextField
-              label="Trigger variant IDs"
-              value={form.trigger_variant_ids}
-              onChange={updateField("trigger_variant_ids")}
-              helpText="Comma-separated variant GIDs that should trigger this offer"
-              autoComplete="off"
-            />
+            <Banner>
+              Discounted price preview:{" "}
+              <TextStyle variation="strong">
+                {form.currency || "USD"}{" "}
+                {previewDiscountedPrice == null ? "—" : previewDiscountedPrice.toFixed(2)}
+              </TextStyle>
+            </Banner>
+
+            <FormLayout.Group>
+              <Select
+                label="Trigger product"
+                options={productOptions(products, triggerProductId)}
+                value={triggerProductId}
+                onChange={selectTriggerProduct}
+                disabled={productsLoading || productsError}
+              />
+              <Select
+                label="Trigger variant"
+                options={variantOptions(products, triggerProductId, triggerVariantId)}
+                value={triggerVariantId}
+                onChange={selectTriggerVariant}
+                disabled={productsLoading || productsError || !triggerProductId}
+              />
+            </FormLayout.Group>
 
             <Checkbox label="Active" checked={form.active} onChange={updateField("active")} />
           </FormLayout>

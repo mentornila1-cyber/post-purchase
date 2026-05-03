@@ -25,6 +25,11 @@ export default function TestingPage() {
                   <TextStyle variation="strong"> Post-purchase page</TextStyle> and select this app's
                   extension.
                 </List.Item>
+                <List.Item>
+                  To test AI selection, set <TextStyle variation="code">OPENAI_API_KEY</TextStyle> before
+                  starting the app and choose <TextStyle variation="strong">AI reasoning</TextStyle> on
+                  the Dashboard strategy card.
+                </List.Item>
                 <List.Item>Add a trigger product to the cart (e.g. a snowboard).</List.Item>
                 <List.Item>
                   Complete checkout using Bogus Gateway (card number{" "}
@@ -43,16 +48,35 @@ export default function TestingPage() {
             <Stack vertical spacing="loose">
               <Heading element="h3">How offers are matched</Heading>
               <p>
-                The current rule-based scorer awards points for product, variant, product type,
-                and tag matches against the line items in the post-purchase token. Offers also
-                receive points for having a discount and a high priority. The highest-scoring
-                active offer wins.
+                The current rule-based scorer awards points for product and variant matches
+                against the line items in the post-purchase token. Offers also receive points for
+                having a discount and a high priority. The highest-scoring active offer wins.
               </p>
               <p>
                 <TextStyle variation="subdued">
                   Note: in this MVP the post-purchase token only exposes line item product IDs and
-                  variant IDs — not product types or tags. Tag and product-type triggers therefore
-                  only fire when those fields are populated by an order context fetch.
+                  variant IDs — not product types or tags. Adding those dimensions would require an
+                  Admin API enrichment call before scoring.
+                </TextStyle>
+              </p>
+            </Stack>
+          </Card>
+        </Layout.Section>
+
+        <Layout.Section>
+          <Card title="AI strategy expectations" sectioned>
+            <Stack vertical spacing="loose">
+              <p>
+                When AI reasoning is selected and <TextStyle variation="code">OPENAI_API_KEY</TextStyle>{" "}
+                is configured, Rails sends the completed order context and eligible offer catalog to
+                OpenAI for a structured recommendation. The backend validates the returned offer,
+                records the rationale in <TextStyle variation="code">OfferDecision</TextStyle>, and
+                merges AI score adjustments into the normal score breakdown.
+              </p>
+              <p>
+                <TextStyle variation="subdued">
+                  If the key is missing, OpenAI times out, or the model returns an invalid offer ID,
+                  checkout still continues by falling back to rule-based scoring.
                 </TextStyle>
               </p>
             </Stack>
@@ -80,6 +104,12 @@ export default function TestingPage() {
               <List.Item>
                 <TextStyle variation="strong">applyChangeset error</TextStyle> — the variant ID on
                 the offer needs to be a real numeric variant ID for your dev store.
+              </List.Item>
+              <List.Item>
+                <TextStyle variation="strong">AI falls back to rules</TextStyle> — confirm
+                <TextStyle variation="code"> OPENAI_API_KEY</TextStyle> is set in the same terminal
+                running <TextStyle variation="code">yarn dev</TextStyle>. Check Rails logs for
+                <TextStyle variation="code"> [AiReasoning]</TextStyle> timeout or validation errors.
               </List.Item>
             </List>
           </Card>

@@ -3,8 +3,8 @@
 module PostPurchase
   module Strategies
     # Deterministic, score-based strategy. Awards points for product / variant
-    # / product type / tag matches, plus discount and priority bonuses, minus
-    # a heavy penalty for offers whose product was already purchased.
+    # matches, plus discount and priority bonuses, minus a heavy penalty for
+    # offers whose product was already purchased.
     class RuleBased < Base
       def call
         return nil if active_offers.empty?

@@ -33,7 +33,7 @@ function Metric({ label, value }) {
 const STRATEGY_LABELS = {
   rule_based: "Rule-based scoring (deterministic)",
   manual_priority: "Manual priority (highest priority wins)",
-  ai_reasoning: "AI reasoning (Claude — falls back to rules without API key)",
+  ai_reasoning: "AI reasoning (OpenAI — falls back to rules without API key)",
 };
 
 function StrategyCard() {

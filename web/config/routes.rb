@@ -16,6 +16,7 @@ Rails.application.routes.draw do
     get "events", to: "events#index"
     get "shop_settings", to: "shop_settings#show"
     patch "shop_settings", to: "shop_settings#update"
+    get "shopify/products", to: "shopify/products#index"
     resources :offers, only: [:index, :create, :update, :destroy]
 
     namespace :webhooks do
