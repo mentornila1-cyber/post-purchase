@@ -215,10 +215,58 @@ merchant-readable decision reason, a score breakdown, and candidate scores.
 That shared interface keeps the checkout extension and analytics code
 independent of the selection method.
 
+All three strategies receive the same normalized order context and active
+offer catalog. They differ only in how they use those inputs.
+
+Example order context:
+
+```json
+{
+  "reference_id": "9c5824a4870ca31c9957f815926bfd17",
+  "subtotal": 749.95,
+  "currency": "USD",
+  "customer_id": 8485193285692,
+  "destination_country": "US",
+  "line_items": [
+    {
+      "product_id": "gid://shopify/Product/8906386735164",
+      "variant_id": "gid://shopify/ProductVariant/44848386539580",
+      "title": "The Collection Snowboard: Liquid",
+      "quantity": 1,
+      "price": 749.95
+    }
+  ]
+}
+```
+
+Example active offers:
+
+```json
+[
+  {
+    "id": 1,
+    "title": "Ski Wax",
+    "shopify_product_id": "gid://shopify/Product/111",
+    "shopify_variant_id": "gid://shopify/ProductVariant/222",
+    "discounted_price": 19.96,
+    "discount_type": "percentage",
+    "discount_value": 20,
+    "trigger_product_ids": ["gid://shopify/Product/8906386735164"],
+    "trigger_variant_ids": ["gid://shopify/ProductVariant/44848386539580"],
+    "priority": 100,
+    "active": true
+  }
+]
+```
+
 ### `rule_based` (default)
 
-Deterministic scoring. For every active offer the
-`OfferScoringService` computes a total from these dimensions:
+Deterministic scoring. Rails loads active offers ordered by
+`priority DESC, id ASC`, scores every offer with `OfferScoringService`, and
+selects the highest positive score. If every score is `0` or lower, no offer
+is shown.
+
+For every active offer, the scorer computes a total from these dimensions:
 
 | Dimension | Points | Fires when... |
 |---|---|---|
@@ -233,23 +281,56 @@ The highest scorer with a positive total wins. Each decision is stored in
 `OfferDecision` with the full `score_breakdown` and a human-readable
 `decision_reason` so selections are auditable.
 
+Tie behavior is intentionally simple for the POC: because active offers are
+loaded by priority first, equal scores favor the higher-priority offer, then
+the older/lower-id offer.
+
 The admin offer form supports selecting multiple trigger products and
 multiple trigger variants. Product triggers match any purchased variant of
 that product; variant triggers add a more specific match when the order
 contains one of the selected variants.
 
+With the example above, `rule_based` sees that the purchased snowboard
+matches both the Ski Wax trigger product and trigger variant, then adds the
+discount and priority bonuses. That makes Ski Wax a high-scoring
+cross-sell.
+
 ### `manual_priority`
 
-Pure `priority DESC` ordering. Triggers and scoring are ignored — the
-merchant is in full control via the **Priority** field on each offer.
-Already-purchased offers are filtered out so we never re-offer the same
-thing.
+Merchant-controlled ordering. Rails loads active offers by
+`priority DESC, id ASC`, removes any offer whose product or variant is already
+in the completed order, then chooses the first remaining offer.
+
+This strategy ignores trigger products, trigger variants, discount size, and
+price fit. That is deliberate: it is for campaign moments where the merchant
+wants direct control over what gets promoted. The saved decision reason looks
+like:
+
+```text
+Manual priority: highest-priority eligible offer (priority 90)
+```
+
+With the example above, `manual_priority` does not care that Ski Wax matches
+the snowboard trigger. It only checks that Ski Wax was not already purchased,
+then compares priority against the other active offers.
 
 ### `ai_reasoning`
 
 LLM-assisted deterministic strategy. When `OPENAI_API_KEY` is configured,
 Rails sends a compact order summary and active offer catalog to OpenAI's
-Responses API and asks for structured JSON:
+Responses API with this instruction prompt:
+
+```text
+You select one Shopify post-purchase upsell or cross-sell offer.
+Choose only from the provided offer IDs.
+Do not choose a product or variant the customer already purchased.
+Prefer offers that are relevant to the purchased item, priced as a
+low-friction add-on, discounted enough to feel urgent, and likely to
+increase order value.
+Return concise JSON only.
+```
+
+The response is constrained to structured JSON shaped like this:
 
 ```json
 {
@@ -263,12 +344,30 @@ Responses API and asks for structured JSON:
 }
 ```
 
+The AI input includes:
+
+- order subtotal, currency, destination country
+- purchased product/variant IDs, titles, quantities, and prices
+- eligible active offers only
+- each offer's title, description, product/variant IDs, price, discount,
+  priority, and deterministic base score
+- scoring guidance for relevance, margin/price fit, and customer intent
+
+With the example above, `ai_reasoning` sends the snowboard line item plus
+the eligible offer catalog to OpenAI. The model can then explain that Ski Wax
+is relevant because it is a low-friction maintenance add-on for a snowboard,
+while Rails still validates that the selected offer ID is allowed.
+
 The backend never blindly trusts the model. It verifies that the returned
 offer ID belongs to the active eligible offers, rejects products already in
 the order, merges the AI-provided score adjustments with the deterministic
 `OfferScoringService` score, and stores the full breakdown in
 `OfferDecision`. If OpenAI is not configured, times out, returns invalid
 JSON, or chooses an invalid offer, the strategy falls back to `rule_based`.
+
+In plain English: the model can influence relevance, but Rails still controls
+the candidate set, validates the selected offer, stores the rationale, and
+keeps a deterministic fallback.
 
 The merchant switches strategy on the Dashboard's "Offer selection
 strategy" card, backed by `GET/PATCH /api/shop_settings`.
@@ -316,92 +415,82 @@ the extension lifecycle.
 
 ---
 
-## Key technical decisions
+## Architectural decisions
 
-### 1. Keep the checkout extension thin
+### 1. Start from Shopify's official Ruby template
 
-The post-purchase extension only does lifecycle work: `ShouldRender`
-asks Rails whether an offer should appear, `Render` displays the selected
-offer, and accept/decline sends the buyer's response back to Rails. Offer
-selection, analytics writes, and changeset signing all stay out of the
-extension.
+I started from `shopify-app-template-ruby` instead of wiring OAuth,
+embedded-app auth, session storage, webhooks, and Shopify API setup by hand.
+That kept the project focused on the assignment's actual problem:
+post-purchase offers, checkout lifecycle integration, offer selection, and
+analytics.
 
-This keeps the buyer-facing code small and resilient. The tradeoff is
-that the extension needs the current app tunnel URL during local
-development, so `APP_URL` must be updated when `shopify app dev` starts a
-new tunnel.
+The tradeoff is that the repo carries some standard Shopify template
+structure, such as `User`, `Shop`, embedded auth routes, and webhook
+controllers. I kept that structure because it is familiar to Shopify
+developers and gives the app a production-shaped foundation.
 
-### 2. Use Rails as the trusted backend
+### 2. Support three offer-selection strategies
 
-Rails owns the sensitive and stateful work: decoding Shopify's
-post-purchase JWT, looking up the shop, selecting an offer, persisting
-events, and signing the post-purchase changeset with `SHOPIFY_API_SECRET`.
-The extension never receives the Shopify secret and cannot submit an
-arbitrary changeset.
+The app intentionally has three ways to decide which offer to show:
+`rule_based`, `manual_priority`, and `ai_reasoning`. This makes the offer
+engine easier to compare and reason about instead of betting everything on
+one approach.
 
-The extension sends only `{reference_id, offer_id}` to
-`POST /api/post_purchase/sign_changeset`. Rails re-loads the active offer,
-builds the changeset server-side, signs it, and returns the token that the
-extension passes to `applyChangeset()`.
+`rule_based` is the reliable deterministic baseline, `manual_priority` gives
+the merchant direct campaign control, and `ai_reasoning` tests whether a
+runtime LLM can choose a more relevant cross-sell from the order context. All
+three strategies return the same result shape, so the checkout controller,
+extension, and analytics layer do not care which strategy won.
 
-### 3. Treat Shopify checkout as a reliability boundary
+### 3. Keep the checkout extension as thin as possible
 
-Checkout should never be blocked by analytics, AI, or network hiccups.
-For that reason, every post-purchase endpoint is defensive: offer
-selection errors return `{render: false}`, event tracking failures are
-logged without raising, and accept errors are tracked before calling
-`done()`.
+The extension handles Shopify lifecycle work only: `ShouldRender` asks Rails
+for an offer, `Render` displays it, accept signs/applies the changeset, and
+decline tracks rejection. Rails owns the stateful logic: JWT decoding, offer
+selection, analytics, and changeset signing.
 
-The AI strategy follows the same rule. OpenAI can improve relevance, but
-if it is missing, slow, or returns invalid JSON, Rails falls back to
-deterministic rule-based scoring.
+This keeps buyer-facing checkout code small and reduces risk in the most
+sensitive part of the flow.
 
-### 4. Strategy objects instead of controller branching
+### 4. Treat Rails as the trusted system boundary
 
-Offer selection lives behind one interface:
-`call(shop:, order_context:) → { offer:, decision_reason:,
-score_breakdown:, candidates: }`. `OfferSelector` reads
-`Shop#selection_strategy` and dispatches to `RuleBased`, `ManualPriority`,
-or `AiReasoning`.
+The extension never receives `SHOPIFY_API_SECRET` and never builds arbitrary
+changesets on its own. When the buyer accepts an offer, the extension sends
+`reference_id` and `offer_id` to Rails. Rails re-loads the active offer,
+builds the changeset, signs it server-side, and returns the token for
+`applyChangeset()`.
 
-This keeps the checkout controller stable while allowing the merchant to
-switch strategy from the React/Polaris dashboard. Adding another strategy
-would be a new service object, not a rewrite of the extension or
-analytics layer.
+That separation keeps secrets and trust decisions out of browser code.
 
-### 5. Make offer decisions explainable
+### 5. Make every offer decision explainable
 
-Every selected offer writes an `OfferDecision` row with the winning offer,
+Every selected offer writes an `OfferDecision` with the winning offer,
 candidate scores, score breakdown, and a human-readable reason. This is
-especially important for AI-assisted selection: the LLM recommends, but
-Rails validates and records the rationale.
+especially useful for AI-assisted selection: the model can recommend, but
+Rails validates the response and records why it was accepted.
 
-That gives the merchant an audit trail instead of a black box, and it
-also makes the walkthrough easier: `OfferDecision.last` shows exactly why
-the customer saw a specific offer.
+That turns the offer engine into something auditable instead of a black box,
+which matters for both debugging and merchant trust.
 
-### 6. Separate merchant admin from buyer checkout
+### 6. Use `reference_id` for post-purchase idempotency
 
-The buyer surface is the Shopify post-purchase extension. The merchant
-surface is a React app using Shopify Polaris and App Bridge, backed by
-Rails JSON endpoints for offers, analytics, event logs, and shop
-settings.
+Shopify can call `ShouldRender` more than once for the same checkout. The
+app uses `reference_id` as an idempotency key: the first request creates the
+`OfferDecision` and impression, and later requests for the same purchase
+reuse the decision without rerunning scoring or AI.
 
-This split keeps the checkout UI focused on conversion while the embedded
-admin app handles configuration and reporting. The Rails backend is the
-shared contract between both surfaces.
+This keeps analytics clean and avoids unnecessary OpenAI calls.
 
-### 7. Read offer setup data from Shopify
+### 7. Read merchant setup data from Shopify
 
-The offer form does not ask merchants to paste product IDs and variant IDs
-from memory. It calls `GET /api/shopify/products`, and Rails uses the
-Shopify Admin GraphQL API to return active products and variants for the
-current shop.
+The offer form loads active products and variants from Shopify Admin GraphQL
+instead of asking merchants to paste product and variant IDs. The app still
+stores concrete product/variant identifiers on `Offer`, because the
+post-purchase changeset must add one specific variant.
 
-The form still stores the concrete product and variant identifiers on
-`Offer`, because the post-purchase changeset needs a specific variant to
-add. Rails can derive the numeric variant ID from the Shopify variant GID,
-so the admin UI only needs one variant selector.
+This keeps setup closer to how a real Shopify admin app would work while
+staying simple enough for the POC.
 
 ---
 
@@ -434,11 +523,6 @@ know what's *not* working and where the boundaries are.
   needs search and pagination.
 - **CORS allows `*` origin.** Fine for dev; production would lock down
   to Shopify's checkout domains.
-- **No ResourcePicker yet.** The offer form loads active products and
-  variants through Shopify Admin GraphQL, but selection is still plain
-  product/variant selects. A production version would replace this with
-  App Bridge ResourcePicker for search, pagination, and a native Shopify
-  admin feel.
 - **SQLite database.** Fine locally; switch to Postgres for any real
   deployment.
 - **No background workers used.** Event tracking writes synchronously.
@@ -448,55 +532,65 @@ know what's *not* working and where the boundaries are.
 
 ## Production improvements
 
-If this were graduating to a real revenue app, the rough order I'd
-attack:
+If this were graduating to a real revenue app, I would keep the first
+production focus on post-purchase reliability and measurable lift.
 
-1. **Admin API enrichment of line items.** One GraphQL call during
-   `ShouldRender` to resolve `productType` and `tags` for the purchased
-   products, with a short cache on `(shop_id, product_id)`. Re-enables
-   tag/type triggers.
-2. **Broaden the decision cache beyond one checkout.** The app already
-   reuses an `OfferDecision` for duplicate `ShouldRender` calls with the
-   same `reference_id`. Production can go further: two buyers can produce
-   the same effective input, such as the same purchased products, destination
-   market, active offer set, and strategy version. Cache the selected offer
-   by a fingerprint such as
-   `(shop_id, strategy, order-context hash, active-offer-set hash)` with a
-   short TTL so equivalent inputs can avoid another OpenAI call.
-3. **Precompute AI reasoning outside checkout.** Add a scheduled worker
-   that periodically builds "reasoning profiles" for common purchase
-   scenarios: product-to-offer pairings, bundle recommendations, low-cost
-   accessory matches, and margin-friendly alternatives. At checkout time,
-   Rails would first read this prepared recommendation table and only call
-   OpenAI when the input is novel or stale. This keeps the buyer path fast
-   while still letting AI improve offer quality.
-4. **Harden the AI strategy.** Add richer eval fixtures for different
-   product bundles, cap model latency aggressively, log cache hit rate,
-   and monitor fallback rate as an operational signal.
-5. **Inventory awareness.** Skip offers whose variant is out of stock
-   (another GraphQL hop, also cacheable).
-6. **A/B testing.** Add a `Strategies::RotationAB` that splits traffic
-   across multiple offers and uses the existing `OfferEvent` data to
-   compute lift.
-7. **Frequency capping.** Don't show the same customer the same offer
-   twice in N days — a query against `OfferEvent`.
-8. **Real Shopify resource picker** in the admin Offers form so merchants
-   can search/select variants instead of pasting IDs.
-9. **Observability.** Datadog/Sentry on the controllers; alerts on
-   `error` event-type rate.
-10. **Webhook-driven order syncing** to backfill `order_id` and customer
-   data on `OfferEvent` after the order is created.
-11. **Margin-aware scoring.** Add a `margin` field on Offer; the scorer
-   prefers high-margin offers when ties happen.
-12. **Move CORS off `*`** to an allowlist of Shopify checkout origins.
-13. **Postgres + Sidekiq** for production; Redis for stronger cross-process
-    idempotency and async analytics writes.
-14. **Least-privilege Shopify scopes.** The demo currently requests
-    `read_products,write_products`; the current offer flow only needs product
-    reads, so production should remove unused scopes unless future admin
-    features require them.
-15. **Production secret management.** `SHOPIFY_API_SECRET` /
-    `OPENAI_API_KEY` from the platform's secret store.
+### 1. Make checkout fast and reliable
+
+Checkout should stay fast even when AI, analytics, or Shopify Admin API calls
+are slow. The app already reuses an `OfferDecision` for duplicate
+`ShouldRender` calls with the same `reference_id`; production can broaden
+that into a short-lived cache keyed by
+`(shop_id, strategy, order-context hash, active-offer-set hash)` so equivalent
+inputs avoid another OpenAI call.
+
+I would also precompute AI reasoning outside checkout with a scheduled worker.
+That worker could build "reasoning profiles" for common purchase scenarios:
+product-to-offer pairings, bundle recommendations, low-cost accessory matches,
+and margin-friendly alternatives. At checkout time, Rails would first read the
+prepared recommendation table and only call OpenAI when the input is novel or
+stale.
+
+### 2. Improve offer intelligence
+
+The current scoring uses product/variant triggers, price fit, discount,
+priority, and AI reasoning. Production should enrich the purchase context with
+Admin API data for product type/tags, skip out-of-stock variants, add
+margin-aware scoring, and support customer-level logic such as frequency
+capping and purchase history.
+
+This is also where I would add a `Strategies::RotationAB` strategy to split
+traffic across multiple offers and use the existing `OfferEvent` data to
+measure lift.
+
+### 3. Improve analytics
+
+The current dashboard covers impressions, accepts, rejects, conversion rate,
+revenue, top offers, and recent events. A production version should add date
+filters, per-offer funnels, revenue per impression, customer/cohort segments,
+and exportable reporting.
+
+Longer term, the goal would be measuring incremental lift rather than only
+counting accepted offer revenue.
+
+### 4. Make data and operations production-grade
+
+SQLite is fine for local development. Production should use Postgres for app
+data, Redis for cache/idempotency, and Sidekiq for async work such as
+analytics writes, webhook sync, and AI precomputation.
+
+I would also add Sentry/Datadog monitoring, alerts on `error` event rate,
+webhook-driven order syncing to backfill `order_id` and customer data, strict
+CORS allowlists, least-privilege Shopify scopes, and secret management for
+`SHOPIFY_API_SECRET` and `OPENAI_API_KEY`.
+
+### 5. Make merchant setup better
+
+The current offer form loads active products and variants through Admin
+GraphQL, but it uses simple selects and only fetches the first 50 products. A
+production version should use Shopify's ResourcePicker, product search,
+pagination, inventory/price validation, and a preview/test mode so merchants
+can confidently configure offers without touching raw IDs.
 
 ---
 
