@@ -29,6 +29,14 @@ Customer pays
 | Shopify APIs | Post-purchase JWT / changesets, Admin GraphQL product catalog |
 | Tooling | Shopify CLI, Vite, react-query, JWT (`jwt` gem) |
 
+This project started from Shopify's official Ruby app template:
+`https://github.com/Shopify/shopify-app-template-ruby`. The post-purchase
+extension was generated with Shopify CLI:
+
+```bash
+shopify app generate extension --template post_purchase_ui --name my-post-purchase-ui-extension
+```
+
 ---
 
 ## Architecture
