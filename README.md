@@ -125,7 +125,7 @@ cd web && bundle install && bin/rails db:migrate db:seed && cd ..
 # Optional: enables the AI-assisted offer strategy.
 # Without this, ai_reasoning falls back to rule_based.
 export OPENAI_API_KEY="your_api_key_here"
-export OPENAI_MODEL="gpt-5"
+export OPENAI_MODEL="gpt-5.4-mini"
 
 yarn dev
 ```
