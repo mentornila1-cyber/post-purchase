@@ -20,7 +20,7 @@ module PostPurchase
 
       offer = result[:offer]
 
-      ::PostPurchase::EventTracker.track_impression(
+      ::PostPurchase::EventTracker.track_impression_once(
         shop: current_shop,
         offer: offer,
         reference_id: reference_id,

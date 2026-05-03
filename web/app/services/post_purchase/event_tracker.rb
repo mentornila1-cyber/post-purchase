@@ -24,6 +24,20 @@ module PostPurchase
         track(shop: shop, offer: offer, event_type: "impression", **attrs)
       end
 
+      def track_impression_once(shop:, offer:, **attrs)
+        reference_id = attrs[:reference_id]
+        if reference_id.present? && OfferEvent.exists?(
+          shop: shop,
+          offer: offer,
+          event_type: "impression",
+          reference_id: reference_id,
+        )
+          return nil
+        end
+
+        track_impression(shop: shop, offer: offer, **attrs)
+      end
+
       def track_acceptance(shop:, offer:, revenue_added:, **attrs)
         track(shop: shop, offer: offer, event_type: "accepted", revenue_added: revenue_added, **attrs)
       end
