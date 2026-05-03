@@ -36,7 +36,7 @@ import {
 // `application_url` in shopify.app.toml). When running `shopify app dev`,
 // Shopify CLI rewrites application_url to the active tunnel URL — paste it
 // here. Production deploys should set this to the deployed app URL.
-const APP_URL = "https://capabilities-proposition-went-jersey.trycloudflare.com";
+const APP_URL = "https://temple-because-cycling-hearts.trycloudflare.com";
 
 const apiUrl = (path) => `${APP_URL.replace(/\/$/, "")}${path}`;
 

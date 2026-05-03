@@ -46,12 +46,12 @@ const splitCsv = (raw) =>
 
 const joinCsv = (arr) => (Array.isArray(arr) ? arr.join(", ") : "");
 
-const firstCsvValue = (raw) => splitCsv(raw)[0] || "";
-
 const findProduct = (products, productId) => products.find((product) => product.id === productId);
 
 const findVariant = (products, variantId) =>
   products.flatMap((product) => product.variants || []).find((variant) => variant.id === variantId);
+
+const productVariants = (product) => (Array.isArray(product?.variants) ? product.variants : []);
 
 const productOptions = (products, selectedProductId) => {
   const options = [
@@ -66,13 +66,20 @@ const productOptions = (products, selectedProductId) => {
   return options;
 };
 
+const triggerProductOptions = (products, selectedProductIds) =>
+  products.map((product) => ({
+    label: product.title,
+    value: product.id,
+    selected: selectedProductIds.includes(product.id),
+  }));
+
 const variantOptions = (products, productId, selectedVariantId) => {
   const product = findProduct(products, productId);
   const options = [{ label: "Select variant", value: "" }];
 
   if (product) {
     options.push(
-      ...product.variants.map((variant) => ({
+      ...productVariants(product).map((variant) => ({
         label: variant.title === "Default Title" ? product.title : `${product.title} - ${variant.title}`,
         value: variant.id,
       })),
@@ -85,6 +92,47 @@ const variantOptions = (products, productId, selectedVariantId) => {
 
   return options;
 };
+
+const triggerVariantOptions = (products, selectedProducts, selectedVariantIds) =>
+  selectedProducts.flatMap((product) =>
+    productVariants(product).map((variant) => ({
+      label: variant.title === "Default Title" ? product.title : `${product.title} - ${variant.title}`,
+      value: variant.id,
+      selected: selectedVariantIds.includes(variant.id),
+    })),
+  );
+
+function NativeMultiSelect({ label, helpText, options, disabled, onChange }) {
+  const handleChange = (event) => {
+    onChange(Array.from(event.target.selectedOptions).map((option) => option.value));
+  };
+
+  return (
+    <Stack vertical spacing="extraTight">
+      <TextStyle variation="strong">{label}</TextStyle>
+      {helpText ? <TextStyle variation="subdued">{helpText}</TextStyle> : null}
+      <select
+        multiple
+        disabled={disabled}
+        value={options.filter((option) => option.selected).map((option) => option.value)}
+        onChange={handleChange}
+        style={{
+          minHeight: 120,
+          width: "100%",
+          border: "1px solid #c9cccf",
+          borderRadius: 4,
+          padding: 8,
+        }}
+      >
+        {options.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+    </Stack>
+  );
+}
 
 const offerToForm = (offer) => ({
   title: offer.title || "",
@@ -230,12 +278,13 @@ export default function OffersPage() {
 
   const updateField = (field) => (value) => setForm((f) => ({ ...f, [field]: value }));
   const previewDiscountedPrice = calculateDiscountedPrice(form);
-  const triggerProductId = firstCsvValue(form.trigger_product_ids);
-  const triggerVariantId = firstCsvValue(form.trigger_variant_ids);
+  const triggerProductIds = splitCsv(form.trigger_product_ids);
+  const triggerVariantIds = splitCsv(form.trigger_variant_ids);
+  const selectedTriggerProducts = products.filter((product) => triggerProductIds.includes(product.id));
 
   const selectOfferProduct = (productId) => {
     const product = findProduct(products, productId);
-    const variant = product?.variants[0];
+    const variant = productVariants(product)[0];
 
     setForm((current) => ({
       ...current,
@@ -257,19 +306,25 @@ export default function OffersPage() {
     }));
   };
 
-  const selectTriggerProduct = (productId) => {
-    const product = findProduct(products, productId);
-    const variant = product?.variants[0];
+  const selectTriggerProducts = (productIds) => {
+    const selectedVariantIds = products
+      .filter((product) => productIds.includes(product.id))
+      .flatMap((product) => productVariants(product).map((variant) => variant.id));
 
     setForm((current) => ({
       ...current,
-      trigger_product_ids: productId,
-      trigger_variant_ids: variant?.id || "",
+      trigger_product_ids: productIds.join(", "),
+      trigger_variant_ids: splitCsv(current.trigger_variant_ids)
+        .filter((variantId) => selectedVariantIds.includes(variantId))
+        .join(", "),
     }));
   };
 
-  const selectTriggerVariant = (variantId) => {
-    setForm((current) => ({ ...current, trigger_variant_ids: variantId }));
+  const selectTriggerVariants = (variantIds) => {
+    setForm((current) => ({
+      ...current,
+      trigger_variant_ids: variantIds.join(", "),
+    }));
   };
 
   if (isLoading) {
@@ -463,22 +518,21 @@ export default function OffersPage() {
               </TextStyle>
             </Banner>
 
-            <FormLayout.Group>
-              <Select
-                label="Trigger product"
-                options={productOptions(products, triggerProductId)}
-                value={triggerProductId}
-                onChange={selectTriggerProduct}
-                disabled={productsLoading || productsError}
-              />
-              <Select
-                label="Trigger variant"
-                options={variantOptions(products, triggerProductId, triggerVariantId)}
-                value={triggerVariantId}
-                onChange={selectTriggerVariant}
-                disabled={productsLoading || productsError || !triggerProductId}
-              />
-            </FormLayout.Group>
+            <NativeMultiSelect
+              label="Trigger products"
+              helpText="Show this offer when the completed order contains any selected product."
+              options={triggerProductOptions(products, triggerProductIds)}
+              disabled={productsLoading || productsError || products.length === 0}
+              onChange={selectTriggerProducts}
+            />
+
+            <NativeMultiSelect
+              label="Trigger variants"
+              helpText="Optional. Adds variant-specific matching for the selected trigger products."
+              options={triggerVariantOptions(products, selectedTriggerProducts, triggerVariantIds)}
+              disabled={productsLoading || productsError || selectedTriggerProducts.length === 0}
+              onChange={selectTriggerVariants}
+            />
 
             <Checkbox label="Active" checked={form.active} onChange={updateField("active")} />
           </FormLayout>

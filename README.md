@@ -187,6 +187,11 @@ The highest scorer with a positive total wins. Each decision is stored in
 `OfferDecision` with the full `score_breakdown` and a human-readable
 `decision_reason` so selections are auditable.
 
+The admin offer form supports selecting multiple trigger products and
+multiple trigger variants. Product triggers match any purchased variant of
+that product; variant triggers add a more specific match when the order
+contains one of the selected variants.
+
 ### `manual_priority`
 
 Pure `priority DESC` ordering. Triggers and scoring are ignored — the
