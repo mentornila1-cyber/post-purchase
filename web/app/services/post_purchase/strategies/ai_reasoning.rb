@@ -12,11 +12,11 @@ module PostPurchase
     # Falls back to rule-based scoring on any error so we never block the buyer.
     #
     # Configuration: set OPENAI_API_KEY in the Rails env. OPENAI_MODEL is
-    # optional and defaults to gpt-5. Without a key, the strategy short-circuits
-    # to RuleBased so the flow never breaks in dev.
+    # optional and defaults to gpt-5.4-mini. Without a key, the strategy
+    # short-circuits to RuleBased so the flow never breaks in dev.
     class AiReasoning < Base
       OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
-      DEFAULT_MODEL = "gpt-5"
+      DEFAULT_MODEL = "gpt-5.4-mini"
       REQUEST_TIMEOUT_SECONDS = 6
 
       def call
@@ -111,7 +111,7 @@ module PostPurchase
         <<~PROMPT
           You select one Shopify post-purchase upsell or cross-sell offer.
           Choose only from the provided offer IDs.
-          Do not choose a product or variant the customer already purchased.
+          Choose only from the eligible offers provided by the backend.
           Prefer offers that are relevant to the purchased item, priced as a
           low-friction add-on, discounted enough to feel urgent, and likely to
           increase order value.

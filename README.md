@@ -124,8 +124,12 @@ shopify app generate extension --template post_purchase_ui --name my-post-purcha
 yarn install
 
 # Install gems and run migrations
-cd web && bundle install && bin/rails db:migrate db:seed && cd ..
+cd web && bundle install && bin/rails db:migrate && cd ..
 ```
+
+The Rails migrations create the local SQLite tables for `shops`, `users`,
+`offers`, `offer_events`, and `offer_decisions`. The exact table definitions
+live in `web/db/migrate/` and `web/db/schema.rb`.
 
 ### Run the app
 
@@ -150,6 +154,13 @@ If you previously installed the app with older scopes, reinstall it so the
 admin offer form can read products and variants for its selectors.
 The app currently requests `read_products,write_products`; `read_products`
 is what powers the offer product and trigger selectors.
+
+After the app has been installed and a `Shop` row exists, you can seed the
+demo Ski Wax offer:
+
+```bash
+cd web && bin/rails db:seed && cd ..
+```
 
 ### Wire the post-purchase extension to your dev store
 
@@ -206,8 +217,8 @@ interface in `web/app/services/post_purchase/strategies/`:
 
 | Strategy | Purpose | How it decides | Best use |
 |---|---|---|---|
-| `rule_based` | Safe deterministic default | Filters out already-purchased products/variants, then scores remaining active offers using product/variant matches, price fit, and discount | Reliable checkout behavior and explainable MVP logic |
-| `manual_priority` | Merchant override | Picks the highest-priority active offer that was not already purchased | Campaigns where the merchant wants direct control |
+| `rule_based` | Safe deterministic default | Scores eligible active offers using product/variant matches, price fit, and discount | Reliable checkout behavior and explainable MVP logic |
+| `manual_priority` | Merchant override | Picks the highest-priority eligible active offer | Campaigns where the merchant wants direct control |
 | `ai_reasoning` | Runtime AI-assisted selection | Sends order context and eligible offers to OpenAI, validates the structured recommendation, merges AI score adjustments with deterministic scoring, and falls back to rules on failure | Demonstrating personalized, revenue-focused offer reasoning |
 
 All three return the same result shape: the selected offer, a
@@ -261,10 +272,9 @@ Example active offers:
 
 ### `rule_based` (default)
 
-Deterministic scoring. Rails first removes any offer whose product or variant
-is already in the completed order. It then scores every remaining active offer
-with `OfferScoringService` and selects the highest positive score. If every
-score is `0` or lower, no offer is shown.
+Deterministic scoring. Rails scores each eligible active offer with
+`OfferScoringService` and selects the highest positive score. If every score
+is `0` or lower, no offer is shown.
 
 For every active offer, the scorer computes a total from these dimensions:
 
@@ -297,8 +307,8 @@ on merchant priority.
 ### `manual_priority`
 
 Merchant-controlled ordering. Rails loads active offers by
-`priority DESC, id ASC`, removes any offer whose product or variant is already
-in the completed order, then chooses the first remaining offer.
+`priority DESC, id ASC`, applies the same eligibility guard as the other
+strategies, then chooses the first remaining offer.
 
 This strategy ignores trigger products, trigger variants, discount size, and
 price fit. That is deliberate: it is for campaign moments where the merchant
@@ -310,8 +320,7 @@ Manual priority: highest-priority eligible offer (priority 90)
 ```
 
 With the example above, `manual_priority` does not care that Ski Wax matches
-the snowboard trigger. It only checks that Ski Wax was not already purchased,
-then compares priority against the other active offers.
+the snowboard trigger. It compares priority across eligible active offers.
 
 ### `ai_reasoning`
 
@@ -322,7 +331,7 @@ Responses API with this instruction prompt:
 ```text
 You select one Shopify post-purchase upsell or cross-sell offer.
 Choose only from the provided offer IDs.
-Do not choose a product or variant the customer already purchased.
+Choose only from the eligible offers provided by the backend.
 Prefer offers that are relevant to the purchased item, priced as a
 low-friction add-on, discounted enough to feel urgent, and likely to
 increase order value.
@@ -358,11 +367,11 @@ is relevant because it is a low-friction maintenance add-on for a snowboard,
 while Rails still validates that the selected offer ID is allowed.
 
 The backend never blindly trusts the model. It verifies that the returned
-offer ID belongs to the active eligible offers, rejects products already in
-the order, merges the AI-provided score adjustments with the deterministic
-`OfferScoringService` score, and stores the full breakdown in
-`OfferDecision`. If OpenAI is not configured, times out, returns invalid
-JSON, or chooses an invalid offer, the strategy falls back to `rule_based`.
+offer ID belongs to the active eligible offers, merges the AI-provided score
+adjustments with the deterministic `OfferScoringService` score, and stores
+the full breakdown in `OfferDecision`. If OpenAI is not configured, times
+out, returns invalid JSON, or chooses an invalid offer, the strategy falls
+back to `rule_based`.
 
 In plain English: the model can influence relevance, but Rails still controls
 the candidate set, validates the selected offer, stores the rationale, and
@@ -556,9 +565,7 @@ The current scoring uses product/variant triggers, price fit, discount, and
 AI reasoning. Production should enrich the purchase context with Admin API
 data for product type/tags, skip out-of-stock variants, add margin-aware
 scoring, and support customer-level logic such as frequency capping and
-purchase history. A more advanced scorer could also add an explicit
-already-purchased or previously-shown penalty, but this POC keeps that as an
-eligibility filter instead of a score dimension.
+purchase history.
 
 This is also where I would add a `Strategies::RotationAB` strategy to split
 traffic across multiple offers and use the existing `OfferEvent` data to
@@ -640,7 +647,7 @@ post-purchase/
 │   │           └── product_catalog_service.rb
 │   │                                     # Active products/variants for admin selects
 │   ├── db/
-│   │   ├── migrate/                # offers, offer_events, offer_decisions, selection_strategy
+│   │   ├── migrate/                # shops, users, offers, events, decisions
 │   │   └── seeds.rb                # Ski Wax demo offer
 │   └── frontend/
 │       ├── App.jsx                 # NavMenu + routes
