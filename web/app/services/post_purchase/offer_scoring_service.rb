@@ -21,22 +21,12 @@ module PostPurchase
         variant_match: variant_match_score,
         price_fit: price_fit_score,
         discount: discount_score,
-        priority: priority_score,
-        already_purchased_penalty: already_purchased_penalty,
       }
 
       { total_score: breakdown.values.sum, breakdown: breakdown }
     end
 
     private
-
-    def purchased_product_ids
-      Array(@order_context[:line_items]).map { |li| li[:product_id] }.compact
-    end
-
-    def purchased_variant_ids
-      Array(@order_context[:line_items]).map { |li| li[:variant_id] }.compact
-    end
 
     def product_match_score
       (Array(@offer.trigger_product_ids) & purchased_product_ids).any? ? 50 : 0
@@ -58,14 +48,12 @@ module PostPurchase
       @offer.discount_value.to_f.positive? ? 10 : 0
     end
 
-    def priority_score
-      [@offer.priority.to_i / 10, 10].min
+    def purchased_product_ids
+      Array(@order_context[:line_items]).map { |li| li[:product_id] }.compact
     end
 
-    def already_purchased_penalty
-      already_purchased = purchased_product_ids.include?(@offer.shopify_product_id) ||
-        purchased_variant_ids.include?(@offer.shopify_variant_id)
-      already_purchased ? -100 : 0
+    def purchased_variant_ids
+      Array(@order_context[:line_items]).map { |li| li[:variant_id] }.compact
     end
   end
 end

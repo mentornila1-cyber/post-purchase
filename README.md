@@ -206,7 +206,7 @@ interface in `web/app/services/post_purchase/strategies/`:
 
 | Strategy | Purpose | How it decides | Best use |
 |---|---|---|---|
-| `rule_based` | Safe deterministic default | Scores each active offer using product/variant matches, price fit, discount, priority, and an already-purchased penalty | Reliable checkout behavior and explainable MVP logic |
+| `rule_based` | Safe deterministic default | Filters out already-purchased products/variants, then scores remaining active offers using product/variant matches, price fit, and discount | Reliable checkout behavior and explainable MVP logic |
 | `manual_priority` | Merchant override | Picks the highest-priority active offer that was not already purchased | Campaigns where the merchant wants direct control |
 | `ai_reasoning` | Runtime AI-assisted selection | Sends order context and eligible offers to OpenAI, validates the structured recommendation, merges AI score adjustments with deterministic scoring, and falls back to rules on failure | Demonstrating personalized, revenue-focused offer reasoning |
 
@@ -261,10 +261,10 @@ Example active offers:
 
 ### `rule_based` (default)
 
-Deterministic scoring. Rails loads active offers ordered by
-`priority DESC, id ASC`, scores every offer with `OfferScoringService`, and
-selects the highest positive score. If every score is `0` or lower, no offer
-is shown.
+Deterministic scoring. Rails first removes any offer whose product or variant
+is already in the completed order. It then scores every remaining active offer
+with `OfferScoringService` and selects the highest positive score. If every
+score is `0` or lower, no offer is shown.
 
 For every active offer, the scorer computes a total from these dimensions:
 
@@ -274,16 +274,15 @@ For every active offer, the scorer computes a total from these dimensions:
 | variant_match | +40 | Offer's `trigger_variant_ids` contains a purchased variant |
 | price_fit | +15 | Offer price is 15–50% of the order subtotal |
 | discount | +10 | Offer has a non-zero discount |
-| priority | up to +10 | `priority / 10`, capped at 10 |
-| already_purchased_penalty | −100 | Offered product/variant is already in the order |
 
 The highest scorer with a positive total wins. Each decision is stored in
 `OfferDecision` with the full `score_breakdown` and a human-readable
 `decision_reason` so selections are auditable.
 
-Tie behavior is intentionally simple for the POC: because active offers are
-loaded by priority first, equal scores favor the higher-priority offer, then
-the older/lower-id offer.
+Priority is intentionally not part of `rule_based`; use `manual_priority`
+when the merchant's priority field should control selection. If two offers
+have the same rule-based score, the older/lower-id offer wins as a simple POC
+tie-breaker.
 
 The admin offer form supports selecting multiple trigger products and
 multiple trigger variants. Product triggers match any purchased variant of
@@ -292,8 +291,8 @@ contains one of the selected variants.
 
 With the example above, `rule_based` sees that the purchased snowboard
 matches both the Ski Wax trigger product and trigger variant, then adds the
-discount and priority bonuses. That makes Ski Wax a high-scoring
-cross-sell.
+discount bonus. That makes Ski Wax a high-scoring cross-sell without relying
+on merchant priority.
 
 ### `manual_priority`
 
@@ -553,11 +552,13 @@ stale.
 
 ### 2. Improve offer intelligence
 
-The current scoring uses product/variant triggers, price fit, discount,
-priority, and AI reasoning. Production should enrich the purchase context with
-Admin API data for product type/tags, skip out-of-stock variants, add
-margin-aware scoring, and support customer-level logic such as frequency
-capping and purchase history.
+The current scoring uses product/variant triggers, price fit, discount, and
+AI reasoning. Production should enrich the purchase context with Admin API
+data for product type/tags, skip out-of-stock variants, add margin-aware
+scoring, and support customer-level logic such as frequency capping and
+purchase history. A more advanced scorer could also add an explicit
+already-purchased or previously-shown penalty, but this POC keeps that as an
+eligibility filter instead of a score dimension.
 
 This is also where I would add a `Strategies::RotationAB` strategy to split
 traffic across multiple offers and use the existing `OfferEvent` data to
